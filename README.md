@@ -2,6 +2,8 @@
 
 Internal CRM and order management system for NovaTech Solutions.
 
+<!-- NOVA-123: test push via extension - 2026-07-08 -->
+
 ## Architecture
 
 ```
