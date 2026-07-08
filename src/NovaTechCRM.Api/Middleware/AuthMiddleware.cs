@@ -11,7 +11,7 @@ namespace NovaTechCRM.Api.Middleware;
 // middleware ordering made that awkward. See PR #41 for the full discussion.
 public class AuthMiddleware
 {
-    private readonly RequestDelegate _next;
+    private readonly RequestDelegate _next_next;
     private readonly IConfiguration _config;
 
     private static readonly string[] _publicPaths =
