@@ -7,7 +7,7 @@
       "Bash(git add *)",
       "Bash(git push *)",
       "Bash(git fetch *)",
-      "Bash(curl -s -X POST https://api.github.com/user/repos -H 'Authorization: token REDACTED-TOKEN-REMOVED' -H 'Content-Type: application/json' -d '{\"name\":\"novatech-crm\",\"description\":\"NovaTech CRM\",\"private\":false}')",
+      
       "Bash(git remote *)",
       "Bash(git fsck *)",
       "Bash(echo \"exit: $?\")"
