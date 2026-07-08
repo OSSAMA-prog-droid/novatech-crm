@@ -223,11 +223,24 @@ public class InvoiceService : IInvoiceService
 
         foreach (var invoice in overdue.Where(i => BusinessDays.Add(i.DueAt, BusinessDays.OverdueGracePeriod) < now && i.AmountDue > 0))
         {
+            // Notify first, then persist. If the process is killed or the send fails
+            // between these two steps, the invoice is left in Issued status so
+            // tomorrow's run picks it up again instead of silently losing the notice.
+            try
+            {
+                await _notifications.SendInvoiceOverdueAsync(invoice, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex,
+                    "Failed to send overdue notification for invoice {Number}; will retry next run",
+                    invoice.InvoiceNumber);
+                continue;
+            }
+
             invoice.Status    = InvoiceStatus.Overdue;
             invoice.UpdatedAt = now;
             await _invoiceRepo.UpdateAsync(invoice, ct);
-
-            await _notifications.SendInvoiceOverdueAsync(invoice, ct);
 
             _logger.LogWarning("Invoice {Number} marked overdue ({Days} days late)",
                 invoice.InvoiceNumber, (int)(now - invoice.DueAt).TotalDays);

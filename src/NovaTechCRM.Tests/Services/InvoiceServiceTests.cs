@@ -189,6 +189,52 @@ public class InvoiceServiceTests
     }
 
     [Fact]
+    public async Task ProcessOverdueAsync_LeavesInvoiceIssued_WhenNotificationSendFails()
+    {
+        // Simulates a process restart / transient failure while sending the overdue
+        // notice: the invoice must stay Issued so tomorrow's run retries it, rather
+        // than being flipped to Overdue with the notification silently lost.
+        var invoice = new InvoiceBuilder()
+            .WithStatus(InvoiceStatus.Issued)
+            .Overdue()
+            .Build();
+
+        _invoiceRepo.Setup(r => r.GetByStatusAsync(InvoiceStatus.Issued, default))
+            .ReturnsAsync(new List<Invoice> { invoice });
+        _notify.Setup(n => n.SendInvoiceOverdueAsync(invoice, default))
+            .ThrowsAsync(new InvalidOperationException("mail server unavailable"));
+
+        await CreateSut().ProcessOverdueAsync();
+
+        Assert.Equal(InvoiceStatus.Issued, invoice.Status);
+        _invoiceRepo.Verify(r => r.UpdateAsync(It.IsAny<Invoice>(), default), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessOverdueAsync_LeavesInvoiceIssued_WhenCancelledDuringShutdown()
+    {
+        // Simulates a deploy killing the process mid-send: cancellation must
+        // propagate (not be swallowed) and the invoice must stay Issued.
+        var invoice = new InvoiceBuilder()
+            .WithStatus(InvoiceStatus.Issued)
+            .Overdue()
+            .Build();
+
+        using var cts = new CancellationTokenSource();
+
+        _invoiceRepo.Setup(r => r.GetByStatusAsync(InvoiceStatus.Issued, cts.Token))
+            .ReturnsAsync(new List<Invoice> { invoice });
+        _notify.Setup(n => n.SendInvoiceOverdueAsync(invoice, cts.Token))
+            .ThrowsAsync(new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => CreateSut().ProcessOverdueAsync(cts.Token));
+
+        Assert.Equal(InvoiceStatus.Issued, invoice.Status);
+        _invoiceRepo.Verify(r => r.UpdateAsync(It.IsAny<Invoice>(), default), Times.Never);
+    }
+
+    [Fact]
     public async Task CreateFromOrderAsync_CalculatesTotalsFromLineItems()
     {
         var order = Orders.Simple();
