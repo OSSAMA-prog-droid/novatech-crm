@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(ls *)",
+      "Read(**)",
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(git remote *)",
+      "Bash(git fsck *)",
+      "Bash(echo *)"
+    ]
+  }
+}
