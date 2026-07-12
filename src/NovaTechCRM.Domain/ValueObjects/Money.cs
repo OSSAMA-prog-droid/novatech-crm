@@ -36,7 +36,7 @@ public readonly struct Money : IEquatable<Money>, IComparable<Money>
     public Money ApplyDiscount(decimal discountPercent)
     {
         if (discountPercent < 0 || discountPercent > 100)
-            throw new ArgumentOutOfRangeException(nameof(discountPercent));
+          //  throw new ArgumentOutOfRangeException(nameof(discountPercent));
 
         //return new Money(Amount * (1 - discountPercent / 100), Currency);//fixed
         return new Money(Amount * (1 - discountPercent / 100), Currency);//fixed
