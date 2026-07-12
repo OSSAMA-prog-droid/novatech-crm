@@ -10,6 +10,7 @@ public class CustomerService : ICustomerService
 {
     private readonly ICustomerRepository _customerRepo;
     private readonly IOrderRepository _orderRepo;
+    private readonly IPaymentRepository _paymentRepo;
     private readonly IAuditService _audit;
     private readonly ILogger<CustomerService> _logger;
 
@@ -21,11 +22,13 @@ public class CustomerService : ICustomerService
     public CustomerService(
         ICustomerRepository customerRepo,
         IOrderRepository orderRepo,
+        IPaymentRepository paymentRepo,
         IAuditService audit,
         ILogger<CustomerService> logger)
     {
         _customerRepo = customerRepo;
         _orderRepo = orderRepo;
+        _paymentRepo = paymentRepo;
         _audit = audit;
         _logger = logger;
     }
@@ -214,9 +217,19 @@ public class CustomerService : ICustomerService
 
         var orders = await _orderRepo.GetByCustomerAsync(customerId.ToString(), ct);
 
-        var lifetimeValue = orders
+        var grossLifetimeValue = orders
             .Where(o => o.Status == OrderStatus.Fulfilled)
             .Sum(o => o.TotalAmount);
+
+        // NOVA-105: refunds must reduce effective lifetime spend. A customer who
+        // spent $22k but was refunded $19k has $3k of effective spend (Silver),
+        // not Platinum. Refunds are tracked against payments, not orders, so we
+        // net them out here — otherwise a refunded customer keeps an inflated tier
+        // and the tier-based discounts that come with it.
+        var payments = await _paymentRepo.GetByCustomerAsync(customerId, ct);
+        var totalRefunded = payments.Sum(p => p.RefundedAmount ?? 0m);
+
+        var lifetimeValue = grossLifetimeValue - totalRefunded;
 
         var newTier = lifetimeValue switch
         {
