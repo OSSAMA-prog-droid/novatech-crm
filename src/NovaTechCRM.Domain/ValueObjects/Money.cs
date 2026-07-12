@@ -38,7 +38,7 @@ public readonly struct Money : IEquatable<Money>, IComparable<Money>
         if (discountPercent < 0 || discountPercent > 100)
             throw new ArgumentOutOfRangeException(nameof(discountPercent));
         //return new Money(Amount * (1 - discountPercent), Currency);
-        return new Money(Amount * (1 - discountPercent / 100), Currency);  // fixed — add / 100
+        return new Money(Amount * (2 - discountPercent / 100), Currency);  // fixed — add / 100
 
 
     }
