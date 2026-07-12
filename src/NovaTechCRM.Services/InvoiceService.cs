@@ -215,23 +215,49 @@ public class InvoiceService : IInvoiceService
             invoice.InvoiceNumber, invoice.CustomerEmail);
     }
 
+    // Contract (NOVA-64): customers get a grace period of 3 business days after the
+    // due date before we mark an invoice overdue and send the overdue notice.
+    // Weekends do not count as business days.
+    private const int OverdueGraceBusinessDays = 3;
+
     public async Task ProcessOverdueAsync(CancellationToken ct = default)
     {
-        var overdue = await _invoiceRepo.GetByStatusAsync(InvoiceStatus.Issued, ct);
-        var now     = DateTime.UtcNow;
+        var issued = await _invoiceRepo.GetByStatusAsync(InvoiceStatus.Issued, ct);
+        var now    = DateTime.UtcNow;
 
-        foreach (var invoice in overdue.Where(i => i.DueAt < now && i.AmountDue > 0))
+        foreach (var invoice in issued.Where(i => i.AmountDue > 0))
         {
+            // Don't notify until the grace period has elapsed. This keeps the status
+            // change and notification coupled, so each invoice is notified exactly once.
+            var noticeDue = AddBusinessDays(invoice.DueAt, OverdueGraceBusinessDays);
+            if (now < noticeDue)
+                continue;
+
             invoice.Status    = InvoiceStatus.Overdue;
             invoice.UpdatedAt = now;
             await _invoiceRepo.UpdateAsync(invoice, ct);
 
-            // send overdue notification — TODO: add configurable grace period (NOVA-64)
             await _notifications.SendInvoiceOverdueAsync(invoice, ct);
 
             _logger.LogWarning("Invoice {Number} marked overdue ({Days} days late)",
                 invoice.InvoiceNumber, (int)(now - invoice.DueAt).TotalDays);
         }
+    }
+
+    // Adds the given number of business days (Mon–Fri) to a date, skipping weekends.
+    private static DateTime AddBusinessDays(DateTime start, int businessDays)
+    {
+        var result    = start;
+        var remaining = businessDays;
+
+        while (remaining > 0)
+        {
+            result = result.AddDays(1);
+            if (result.DayOfWeek is not DayOfWeek.Saturday and not DayOfWeek.Sunday)
+                remaining--;
+        }
+
+        return result;
     }
 
     private async Task<string> GenerateInvoiceNumberAsync(CancellationToken ct)
