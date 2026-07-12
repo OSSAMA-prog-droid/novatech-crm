@@ -13,6 +13,7 @@ public class PaymentService : IPaymentService
     private readonly INotificationService _notifications;
     private readonly IAuditService _audit;
     private readonly IPaymentProviderFactory _providerFactory;
+    private readonly ICustomerService _customers;
     private readonly ILogger<PaymentService> _logger;
 
     public PaymentService(
@@ -21,6 +22,7 @@ public class PaymentService : IPaymentService
         INotificationService notifications,
         IAuditService audit,
         IPaymentProviderFactory providerFactory,
+        ICustomerService customers,
         ILogger<PaymentService> logger)
     {
         _paymentRepo     = paymentRepo;
@@ -28,6 +30,7 @@ public class PaymentService : IPaymentService
         _notifications   = notifications;
         _audit           = audit;
         _providerFactory = providerFactory;
+        _customers       = customers;
         _logger          = logger;
     }
 
@@ -160,6 +163,23 @@ public class PaymentService : IPaymentService
 
         _logger.LogInformation("Refund {Amount:C} processed for payment {PaymentId} by {User}",
             amount, paymentId, userId);
+
+        // NOVA-105: a refund lowers the customer's effective lifetime spend, which
+        // can push them below a tier threshold (e.g. a large refund dropping a
+        // Platinum customer to Silver). Re-evaluate the tier so refunded customers
+        // stop receiving tier discounts they no longer qualify for. This is a
+        // best-effort follow-up — the refund itself has already succeeded, so a
+        // failure here must not fail the refund.
+        try
+        {
+            await _customers.EvaluateTierAsync(payment.CustomerId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to re-evaluate tier for customer {CustomerId} after refund on payment {PaymentId}",
+                payment.CustomerId, paymentId);
+        }
 
         return payment;
     }
