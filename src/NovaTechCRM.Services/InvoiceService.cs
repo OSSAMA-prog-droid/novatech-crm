@@ -15,10 +15,6 @@ public class InvoiceService : IInvoiceService
     private readonly IAuditService _audit;
     private readonly ILogger<InvoiceService> _logger;
 
-    // invoice number counter — persisted in DB but cached here (risky across instances)
-    // TODO: move to DB sequence or Redis counter (NOVA-51)
-    private static int _invoiceSequence = 0;
-
     public InvoiceService(
         IInvoiceRepository invoiceRepo,
         ICustomerRepository customerRepo,

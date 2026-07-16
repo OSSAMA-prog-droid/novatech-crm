@@ -1,11 +1,16 @@
+using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using NovaTechCRM.Domain.Exceptions;
 using NovaTechCRM.Domain.Models;
 
 namespace NovaTechCRM.Repositories;
 
 public class InvoiceRepository : IInvoiceRepository
 {
+   
+    private const int SequenceLockTimeoutMs = 10_000;
+
     private readonly NovaTechDbContext _db;
     private readonly string _connectionString;
 
@@ -95,18 +100,56 @@ public class InvoiceRepository : IInvoiceRepository
         await _db.SaveChangesAsync(ct);
     }
 
-    // Uses raw SQL for atomic sequence — EF Core doesn't have a clean abstraction for this.
-    // The sequence table was added in migration v11; the SP does an UPDATE + SELECT in one round trip.
+    
     public async Task<int> GetNextSequenceAsync(int year, CancellationToken ct = default)
     {
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync(ct);
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+
+        await AcquireSequenceLockAsync(conn, tx, year, ct);
 
         await using var cmd = new SqlCommand(
-            "EXEC dbo.usp_GetNextInvoiceSequence @Year", conn);
+            "EXEC dbo.usp_GetNextInvoiceSequence @Year", conn, tx);
         cmd.Parameters.AddWithValue("@Year", year);
 
         var result = await cmd.ExecuteScalarAsync(ct);
-        return Convert.ToInt32(result);
+
+        
+        if (result is null or DBNull)
+            throw new InvoiceException(
+                $"usp_GetNextInvoiceSequence returned no sequence for year {year}; " +
+                "the sequence row is likely missing.");
+
+        var sequence = Convert.ToInt32(result);
+
+        // Commit releases the applock and the sequence row lock together.
+        await tx.CommitAsync(ct);
+        return sequence;
+    }
+
+    private static async Task AcquireSequenceLockAsync(
+        SqlConnection conn, SqlTransaction tx, int year, CancellationToken ct)
+    {
+        await using var cmd = new SqlCommand("sp_getapplock", conn, tx)
+        {
+            CommandType = CommandType.StoredProcedure
+        };
+        cmd.Parameters.AddWithValue("@Resource",    $"InvoiceSequence:{year}");
+        cmd.Parameters.AddWithValue("@LockMode",    "Exclusive");
+        cmd.Parameters.AddWithValue("@LockOwner",   "Transaction");
+        cmd.Parameters.AddWithValue("@LockTimeout", SequenceLockTimeoutMs);
+
+        var returnValue = cmd.Parameters.Add("@ReturnValue", SqlDbType.Int);
+        returnValue.Direction = ParameterDirection.ReturnValue;
+
+        await cmd.ExecuteNonQueryAsync(ct);
+
+        
+        var status = (int)returnValue.Value;
+        if (status < 0)
+            throw new InvoiceException(
+                $"Could not acquire the invoice sequence lock for {year} " +
+                $"(sp_getapplock returned {status}). No number was allocated.");
     }
 }
