@@ -19,6 +19,17 @@ public interface ICustomerRepository
 
     // Legacy — kept for backward compat with old reporting queries
     Task<List<OrderSummary>> GetOrderSummariesAsync(int customerId, CancellationToken ct = default);
+
+    // Dashboard stats computed in SQL — aggregates + recent orders only, independent of history size.
+    Task<CustomerOrderStats> GetOrderStatsAsync(int customerId, CancellationToken ct = default);
+}
+
+public class CustomerOrderStats
+{
+    public int TotalOrders { get; set; }
+    public decimal TotalRevenue { get; set; }
+    public decimal AverageOrderValue { get; set; }
+    public List<OrderSummary> RecentOrders { get; set; } = new();
 }
 
 public class CustomerRepository : ICustomerRepository
@@ -146,5 +157,62 @@ public class CustomerRepository : ICustomerRepository
         }
 
         return summaries;
+    }
+
+    public async Task<CustomerOrderStats> GetOrderStatsAsync(
+        int customerId, CancellationToken ct = default)
+    {
+        await using var conn = new SqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        var stats = new CustomerOrderStats();
+
+        // Aggregate totals computed entirely in SQL — returns a single row regardless of history size.
+        await using (var aggCmd = new SqlCommand(@"
+            SELECT COUNT(*)                          AS OrderCount,
+                   ISNULL(SUM(t.Total), 0)           AS TotalRevenue,
+                   ISNULL(AVG(t.Total), 0)           AS AverageOrderValue
+            FROM (
+                SELECT o.Id, SUM(li.Quantity * li.UnitPrice) AS Total
+                FROM Orders o
+                JOIN LineItems li ON li.OrderId = o.Id
+                WHERE o.CustomerId = @cid
+                GROUP BY o.Id
+            ) t", conn))
+        {
+            aggCmd.Parameters.AddWithValue("@cid", customerId);
+            await using var aggReader = await aggCmd.ExecuteReaderAsync(ct);
+            if (await aggReader.ReadAsync(ct))
+            {
+                stats.TotalOrders       = aggReader.GetInt32(0);
+                stats.TotalRevenue      = aggReader.GetDecimal(1);
+                stats.AverageOrderValue = aggReader.GetDecimal(2);
+            }
+        }
+
+        // Only the 10 most recent orders are materialised, not the entire history.
+        await using (var recentCmd = new SqlCommand(@"
+            SELECT TOP 10 o.Id, o.Status, o.CreatedAt, SUM(li.Quantity * li.UnitPrice) AS Total
+            FROM Orders o
+            JOIN LineItems li ON li.OrderId = o.Id
+            WHERE o.CustomerId = @cid
+            GROUP BY o.Id, o.Status, o.CreatedAt
+            ORDER BY o.CreatedAt DESC", conn))
+        {
+            recentCmd.Parameters.AddWithValue("@cid", customerId);
+            await using var recentReader = await recentCmd.ExecuteReaderAsync(ct);
+            while (await recentReader.ReadAsync(ct))
+            {
+                stats.RecentOrders.Add(new OrderSummary
+                {
+                    OrderId   = recentReader.GetInt32(0),
+                    Status    = recentReader.GetString(1),
+                    CreatedAt = recentReader.GetDateTime(2),
+                    Total     = recentReader.GetDecimal(3),
+                });
+            }
+        }
+
+        return stats;
     }
 }
