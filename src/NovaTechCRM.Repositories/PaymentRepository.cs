@@ -60,6 +60,12 @@ public class PaymentRepository : IPaymentRepository
             .ThenByDescending(m => m.CreatedAt)
             .ToListAsync(ct);
 
+    public async Task<PaymentMethod?> GetPaymentMethodByIdAsync(
+        Guid paymentMethodId, CancellationToken ct = default)
+        => await _db.PaymentMethods
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == paymentMethodId && !m.IsDeleted, ct);
+
     public async Task<PaymentMethod> CreatePaymentMethodAsync(
         PaymentMethod method, CancellationToken ct = default)
     {
