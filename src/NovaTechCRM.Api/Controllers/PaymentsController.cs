@@ -98,50 +98,44 @@ public class PaymentsController : BaseController
         return Created($"/api/payments/methods/{saved.Id}", saved);
     }
 
-    // NOVA-83: IDOR vulnerability — fetches payment method by ID without checking
-    // that the method belongs to the currently authenticated customer.
-    // An attacker who knows (or guesses) a payment method GUID can retrieve another
-    // customer's saved card details: last4, brand, billing name, expiry.
-    // GUIDs are not secrets — they appear in webhook payloads, logs, and can be
-    // enumerated if an attacker has any legitimate access to the system.
-    //
-    // Fix: load the method, then assert method.CustomerId == CurrentCustomerId (or IsAdmin).
+    // NOVA-83: Payment methods are fetched by ID only after verifying that the
+    // method belongs to the authenticated customer (or the caller is an admin).
+    // GUIDs are not secrets — they appear in webhook payloads and logs — so an
+    // authorization check, not obscurity, is what prevents cross-customer access.
     [HttpGet("methods/{paymentMethodId:guid}")]
     public async Task<IActionResult> GetMethod(Guid paymentMethodId, CancellationToken ct)
     {
-        var methods = await _payments.GetPaymentMethodsAsync(
-            // BUG: uses CurrentCustomerId to look up methods but then returns by ID
-            // without re-checking ownership — if the caller supplies a GUID that belongs
-            // to a different customer, GetPaymentMethodByIdAsync would return it.
-            // Currently this calls GetPaymentMethodsAsync which filters by customer,
-            // but the direct-by-ID path added in a later PR does not.
-            CurrentCustomerId, ct);
+        var method = await _payments.GetPaymentMethodByIdAsync(paymentMethodId, ct);
+        if (method is null) return NotFound();
 
-        // this works, but the overload added for the mobile app bypasses this filter:
-        // var method = await _payments.GetPaymentMethodByIdAsync(paymentMethodId, ct);
-        // return method is null ? NotFound() : Ok(method);   // <-- no ownership check
+        if (!IsAdmin && method.CustomerId != CurrentCustomerId)
+            return Forbid();
 
-        var method = methods.FirstOrDefault(m => m.Id == paymentMethodId);
-        return method is null ? NotFound() : Ok(method);
+        return Ok(method);
     }
 
-    // The "mobile app" overload planted below — this is the actual vulnerable endpoint
-    // that was added in a rush for the mobile team and missed the ownership check.
+    // Mobile app overload — same ownership check applies.
     [HttpGet("methods/{paymentMethodId:guid}/details")]
     public async Task<IActionResult> GetMethodDetails(Guid paymentMethodId, CancellationToken ct)
     {
-        // NOVA-83 BUG: fetches by ID with no ownership check.
-        // Any authenticated user can GET /api/payments/methods/{anyGuid}/details
-        // and receive full card metadata for any customer in the system.
-        var allMethods = await _payments.GetPaymentMethodsAsync(0, ct); // 0 fetches ALL customers
-        var method     = allMethods.FirstOrDefault(m => m.Id == paymentMethodId);
-        return method is null ? NotFound() : Ok(method);
+        var method = await _payments.GetPaymentMethodByIdAsync(paymentMethodId, ct);
+        if (method is null) return NotFound();
+
+        if (!IsAdmin && method.CustomerId != CurrentCustomerId)
+            return Forbid();
+
+        return Ok(method);
     }
 
     [HttpDelete("methods/{paymentMethodId:guid}")]
     public async Task<IActionResult> DeleteMethod(Guid paymentMethodId, CancellationToken ct)
     {
-        // TODO: verify ownership before deleting — copy-paste issue from GetMethod above (NOVA-84)
+        var method = await _payments.GetPaymentMethodByIdAsync(paymentMethodId, ct);
+        if (method is null) return NotFound();
+
+        if (!IsAdmin && method.CustomerId != CurrentCustomerId)
+            return Forbid();
+
         await _payments.DeletePaymentMethodAsync(paymentMethodId, ct);
         return NoContent();
     }

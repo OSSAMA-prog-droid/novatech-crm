@@ -188,6 +188,10 @@ public class PaymentService : IPaymentService
         int customerId, CancellationToken ct = default) =>
         await _paymentRepo.GetPaymentMethodsAsync(customerId, ct);
 
+    public async Task<PaymentMethod?> GetPaymentMethodByIdAsync(
+        Guid paymentMethodId, CancellationToken ct = default) =>
+        await _paymentRepo.GetPaymentMethodByIdAsync(paymentMethodId, ct);
+
     public async Task DeletePaymentMethodAsync(Guid paymentMethodId, CancellationToken ct = default)
     {
         await _paymentRepo.DeletePaymentMethodAsync(paymentMethodId, ct);
