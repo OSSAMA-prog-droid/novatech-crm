@@ -13,23 +13,38 @@ CREATE OR ALTER PROCEDURE dbo.usp_GetNextInvoiceSequence
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    DECLARE @next INT;
+    -- NOVA-102: The previous implementation read MAX(SequenceNumber)+1 into a
+    -- variable and then wrote it back in a separate statement. Under concurrent
+    -- load two sessions could read the same value before either wrote, so both
+    -- returned the same sequence -> duplicate invoice numbers (INV-2026-00034 x2).
+    --
+    -- Fix: increment and read the value in a single atomic UPDATE ... OUTPUT
+    -- statement. UPDLOCK + HOLDLOCK serialise concurrent callers for the same
+    -- year (including the first-insert case, via a key-range lock), guaranteeing
+    -- every caller receives a unique, gap-free sequence.
 
-    -- Current highest sequence for this year, plus one.
-    SELECT @next = ISNULL(MAX(SequenceNumber), 0) + 1
-    FROM   dbo.InvoiceSequences
+    DECLARE @next TABLE (SequenceNumber INT);
+
+    BEGIN TRANSACTION;
+
+    -- Atomically bump the counter and capture the new value.
+    UPDATE dbo.InvoiceSequences WITH (UPDLOCK, HOLDLOCK, ROWLOCK)
+    SET    SequenceNumber = SequenceNumber + 1
+    OUTPUT INSERTED.SequenceNumber INTO @next (SequenceNumber)
     WHERE  [Year] = @Year;
 
-    -- Persist the new high-water mark.
-    IF EXISTS (SELECT 1 FROM dbo.InvoiceSequences WHERE [Year] = @Year)
-        UPDATE dbo.InvoiceSequences
-        SET    SequenceNumber = @next
-        WHERE  [Year] = @Year;
-    ELSE
+    -- First invoice of the year: no row existed yet. The HOLDLOCK above holds a
+    -- key-range lock for @Year, so a concurrent first caller blocks here rather
+    -- than racing us to insert a duplicate seed row.
+    IF NOT EXISTS (SELECT 1 FROM @next)
         INSERT INTO dbo.InvoiceSequences ([Year], SequenceNumber)
-        VALUES (@Year, @next);
+        OUTPUT INSERTED.SequenceNumber INTO @next (SequenceNumber)
+        VALUES (@Year, 1);
 
-    SELECT @next AS NextSequence;
+    COMMIT TRANSACTION;
+
+    SELECT SequenceNumber AS NextSequence FROM @next;
 END
 GO
