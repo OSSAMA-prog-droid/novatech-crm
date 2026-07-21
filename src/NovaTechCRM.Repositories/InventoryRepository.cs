@@ -42,15 +42,31 @@ public class InventoryRepository : IInventoryRepository
             .OrderBy(i => i.QuantityAvailable)
             .ToListAsync(ct);
 
-    // NOTE: this is a simple EF Core update — no optimistic concurrency here.
-    // NOVA-61: the service layer is responsible for the check-reserve logic; we just persist.
-    // Proper fix would be a stored procedure with UPDLOCK or row-version concurrency check.
-    // TODO: add RowVersion column and handle DbUpdateConcurrencyException (NOVA-61)
+    // Full-entity EF Core update used by the release/commit/adjust paths.
+    // Reserve no longer flows through here — see TryReserveAsync for the atomic path (NOVA-61).
     public async Task<Inventory> UpdateAsync(Inventory inventory, CancellationToken ct = default)
     {
         _db.Inventory.Update(inventory);
         await _db.SaveChangesAsync(ct);
         return inventory;
+    }
+    
+    public async Task<bool> TryReserveAsync(
+        string sku, string? warehouseId, int quantity, CancellationToken ct = default)
+    {
+        if (quantity <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(quantity), "Reservation quantity must be positive.");
+
+        var rowsAffected = await _db.Inventory
+            .Where(i => i.ProductSku == sku
+                     && (warehouseId == null || i.WarehouseId == warehouseId)
+                     && i.QuantityOnHand - i.QuantityReserved >= quantity)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(i => i.QuantityReserved, i => i.QuantityReserved + quantity)
+                .SetProperty(i => i.LastUpdatedAt, i => DateTime.UtcNow), ct);
+
+        return rowsAffected > 0;
     }
 
     public async Task<InventoryReservation> CreateReservationAsync(

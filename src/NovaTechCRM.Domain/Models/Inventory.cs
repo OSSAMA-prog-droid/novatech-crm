@@ -26,9 +26,7 @@ public class Inventory
     public string? WarehouseName { get; set; }
 
     public int QuantityOnHand { get; set; }
-
-    // NOVA-61: Reserved is updated separately from OnHand — two requests can both
-    // read QuantityAvailable as positive, then both reserve, overselling stock
+    
     public int QuantityReserved { get; set; }
 
     public int QuantityAvailable => QuantityOnHand - QuantityReserved;
