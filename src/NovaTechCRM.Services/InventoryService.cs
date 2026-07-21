@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using NovaTechCRM.Domain.Events;
 using NovaTechCRM.Domain.Exceptions;
 using NovaTechCRM.Domain.Models;
 using NovaTechCRM.Repositories;
@@ -12,9 +11,6 @@ public class InventoryService : IInventoryService
     private readonly IInventoryRepository _inventoryRepo;
     private readonly IAuditService _audit;
     private readonly ILogger<InventoryService> _logger;
-
-    // TODO: inject event bus properly instead of static list (NOVA-61 workaround gone wrong)
-    private static readonly List<Action<InventoryReservedEvent>> _reservationHandlers = new();
 
     public InventoryService(
         IInventoryRepository inventoryRepo,
@@ -43,73 +39,40 @@ public class InventoryService : IInventoryService
         var inv = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
         return inv != null && inv.QuantityAvailable >= quantity;
     }
-
-    // NOVA-61: Race condition.
-    // Step 1: read QuantityAvailable  (non-atomic)
-    // Step 2: compare to requested    (non-atomic)
-    // Step 3: write QuantityReserved  (non-atomic)
-    //
-    // Two concurrent requests for the last 5 units both pass step 2 before
-    // either reaches step 3. Both succeed. QuantityReserved ends up double-counted.
-    // Correct fix: SELECT ... FOR UPDATE or optimistic concurrency check on save.
-    // Temporary workaround added for Black Friday: retry loop (doesn't actually help).
+    
     public async Task ReserveStockAsync(
         string sku, int quantity, Guid orderId, CancellationToken ct = default)
     {
-        // retry up to 3 times — this does NOT fix the race, just masks transient failures
-        for (int attempt = 1; attempt <= 3; attempt++)
+        var reserved = await _inventoryRepo.TryReserveAsync(sku, warehouseId: null, quantity, ct);
+
+        if (!reserved)
         {
-            var inv = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
-
-            if (inv == null)
-                throw new InsufficientInventoryException(sku, quantity, 0);
-
-            // BUG: another thread can pass this check concurrently
-            if (inv.QuantityAvailable < quantity)
-                throw new InsufficientInventoryException(sku, quantity, inv.QuantityAvailable);
-
-            try
-            {
-                // no lock here — the window between the check above and this write
-                // is where concurrent reservations slip through
-                inv.QuantityReserved += quantity;
-                inv.LastUpdatedAt = DateTime.UtcNow;
-
-                await _inventoryRepo.UpdateAsync(inv, ct);
-
-                var transaction = new InventoryTransaction
-                {
-                    ProductSku     = sku,
-                    InventoryId    = inv.Id,
-                    Type           = InventoryTransactionType.Reserved,
-                    QuantityDelta  = -quantity,
-                    QuantityBefore = inv.QuantityAvailable + quantity,
-                    QuantityAfter  = inv.QuantityAvailable,
-                    OrderId        = orderId,
-                    CreatedByUserId = "system",
-                    CreatedAt      = DateTime.UtcNow
-                };
-
-                await _inventoryRepo.AddTransactionAsync(transaction, ct);
-
-                // raise event — also happens before transaction is fully committed
-                var evt = new InventoryReservedEvent(sku, quantity, orderId);
-                foreach (var handler in _reservationHandlers)
-                    handler(evt);
-
-                _logger.LogInformation(
-                    "Reserved {Qty}x {Sku} for order {OrderId} (attempt {Attempt})",
-                    quantity, sku, orderId, attempt);
-
-                return;
-            }
-            catch (Exception ex) when (attempt < 3)
-            {
-                _logger.LogWarning(ex,
-                    "Reservation attempt {Attempt} failed for {Sku}, retrying...", attempt, sku);
-                await Task.Delay(50 * attempt, ct);
-            }
+            // The reservation already failed atomically; re-read only to report the
+            // available quantity in the exception.
+            var current = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
+            throw new InsufficientInventoryException(sku, quantity, current?.QuantityAvailable ?? 0);
         }
+
+        // Units are already reserved and committed above. The rest is bookkeeping.
+        var inv = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
+        if (inv != null)
+        {
+            await _inventoryRepo.AddTransactionAsync(new InventoryTransaction
+            {
+                ProductSku      = sku,
+                InventoryId     = inv.Id,
+                Type            = InventoryTransactionType.Reserved,
+                QuantityDelta   = -quantity,
+                QuantityBefore  = inv.QuantityAvailable + quantity,
+                QuantityAfter   = inv.QuantityAvailable,
+                OrderId         = orderId,
+                CreatedByUserId = "system",
+                CreatedAt       = DateTime.UtcNow
+            }, ct);
+        }
+
+        _logger.LogInformation(
+            "Reserved {Qty}x {Sku} for order {OrderId}", quantity, sku, orderId);
     }
 
     public async Task ReleaseReservationAsync(Guid orderId, CancellationToken ct = default)

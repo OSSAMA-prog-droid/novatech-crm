@@ -12,6 +12,10 @@ public interface IInventoryRepository
     Task<IReadOnlyList<Inventory>> GetLowStockAsync(
         int threshold, CancellationToken ct = default);
     Task<Inventory> UpdateAsync(Inventory inventory, CancellationToken ct = default);
+    
+    Task<bool> TryReserveAsync(
+        string sku, string? warehouseId, int quantity, CancellationToken ct = default);
+
     Task<InventoryReservation> CreateReservationAsync(
         InventoryReservation reservation, CancellationToken ct = default);
     Task<InventoryReservation?> GetReservationAsync(Guid reservationId, CancellationToken ct = default);
