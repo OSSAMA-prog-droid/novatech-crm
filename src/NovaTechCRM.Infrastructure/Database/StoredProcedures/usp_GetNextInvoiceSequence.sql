@@ -16,12 +16,10 @@ BEGIN
 
     DECLARE @next INT;
 
-    -- Current highest sequence for this year, plus one.
     SELECT @next = ISNULL(MAX(SequenceNumber), 0) + 1
-    FROM   dbo.InvoiceSequences
+    FROM   dbo.InvoiceSequences WITH (UPDLOCK, HOLDLOCK)
     WHERE  [Year] = @Year;
 
-    -- Persist the new high-water mark.
     IF EXISTS (SELECT 1 FROM dbo.InvoiceSequences WHERE [Year] = @Year)
         UPDATE dbo.InvoiceSequences
         SET    SequenceNumber = @next

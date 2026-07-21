@@ -102,11 +102,23 @@ public class InvoiceRepository : IInvoiceRepository
         await using var conn = new SqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
-        await using var cmd = new SqlCommand(
-            "EXEC dbo.usp_GetNextInvoiceSequence @Year", conn);
-        cmd.Parameters.AddWithValue("@Year", year);
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(
+            System.Data.IsolationLevel.Serializable, ct);
 
-        var result = await cmd.ExecuteScalarAsync(ct);
-        return Convert.ToInt32(result);
+        try
+        {
+            await using var cmd = new SqlCommand(
+                "EXEC dbo.usp_GetNextInvoiceSequence @Year", conn, tx);
+            cmd.Parameters.AddWithValue("@Year", year);
+
+            var result = await cmd.ExecuteScalarAsync(ct);
+            await tx.CommitAsync(ct);
+            return Convert.ToInt32(result);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
     }
 }
