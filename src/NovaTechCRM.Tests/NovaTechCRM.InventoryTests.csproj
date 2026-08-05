@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Services\InventoryServiceTests.cs" />
+    <Compile Include="Repositories\InventoryRepositoryConcurrencyTests.cs" />
+    <Compile Include="..\..\tests\NovaTechCRM.Tests\OrderServiceTests.cs" />
+
+    <Compile Include="..\NovaTechCRM.Services\InventoryService.cs" />
+    <Compile Include="..\NovaTechCRM.Services\OrderService.cs" />
+    <Compile Include="..\NovaTechCRM.Services\Interfaces\IInventoryService.cs" />
+    <Compile Include="..\NovaTechCRM.Services\Interfaces\IAuditService.cs" />
+    <Compile Include="..\NovaTechCRM.Services\IFraudShieldService.cs" />
+    <Compile Include="..\NovaTechCRM.Services\INotificationService.cs" />
+    <Compile Include="..\NovaTechCRM.Repositories\IInventoryRepository.cs" />
+    <Compile Include="..\NovaTechCRM.Repositories\InventoryRepository.cs" />
+    <Compile Include="..\NovaTechCRM.Repositories\IOrderRepository.cs" />
+
+    <Compile Include="..\NovaTechCRM.Domain\Models\Inventory.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Models\Order.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Models\Invoice.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Models\FraudCheckResult.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Models\AuditLog.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Exceptions\DomainException.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Events\DomainEvent.cs" />
+    <Compile Include="..\NovaTechCRM.Domain\Events\InventoryEvents.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>

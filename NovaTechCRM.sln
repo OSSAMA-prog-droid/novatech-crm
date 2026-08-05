@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{F42CAB5B
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NovaTechCRM.DemoTests", "tests\NovaTechCRM.DemoTests\NovaTechCRM.DemoTests.csproj", "{0F5C0BA7-F4EF-40C8-9DAB-5D7179596C66}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NovaTechCRM.InventoryTests", "src\NovaTechCRM.Tests\NovaTechCRM.InventoryTests.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,8 +22,13 @@ Global
 		{0F5C0BA7-F4EF-40C8-9DAB-5D7179596C66}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0F5C0BA7-F4EF-40C8-9DAB-5D7179596C66}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0F5C0BA7-F4EF-40C8-9DAB-5D7179596C66}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
-	GlobalSection(NestedProjects) = preSolution
+	GlobalSection(NestedProjects) = postSolution
 		{0F5C0BA7-F4EF-40C8-9DAB-5D7179596C66} = {F42CAB5B-F286-42D6-AAB9-84D78372252E}
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890} = {F42CAB5B-F286-42D6-AAB9-84D78372252E}
 	EndGlobalSection
 EndGlobal

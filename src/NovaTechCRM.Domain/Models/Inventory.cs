@@ -27,8 +27,8 @@ public class Inventory
 
     public int QuantityOnHand { get; set; }
 
-    // NOVA-61: Reserved is updated separately from OnHand — two requests can both
-    // read QuantityAvailable as positive, then both reserve, overselling stock
+    // QuantityReserved must be changed via ReserveStockAtomicAsync so
+    // concurrent reservations cannot oversell under load (NOVA-61).
     public int QuantityReserved { get; set; }
 
     public int QuantityAvailable => QuantityOnHand - QuantityReserved;

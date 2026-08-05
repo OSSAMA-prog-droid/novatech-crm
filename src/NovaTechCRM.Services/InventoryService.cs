@@ -12,9 +12,8 @@ public class InventoryService : IInventoryService
     private readonly IInventoryRepository _inventoryRepo;
     private readonly IAuditService _audit;
     private readonly ILogger<InventoryService> _logger;
-
-    // TODO: inject event bus properly instead of static list (NOVA-61 workaround gone wrong)
     private static readonly List<Action<InventoryReservedEvent>> _reservationHandlers = new();
+    private static readonly TimeSpan ReservationHold = TimeSpan.FromMinutes(15);
 
     public InventoryService(
         IInventoryRepository inventoryRepo,
@@ -34,7 +33,7 @@ public class InventoryService : IInventoryService
 
     public async Task<IReadOnlyList<Inventory>> GetLowStockAsync(CancellationToken ct = default)
     {
-        return await _inventoryRepo.GetLowStockAsync(ct);
+        return await _inventoryRepo.GetLowStockAsync(threshold: 10, ct);
     }
 
     public async Task<bool> IsAvailableAsync(
@@ -44,72 +43,39 @@ public class InventoryService : IInventoryService
         return inv != null && inv.QuantityAvailable >= quantity;
     }
 
-    // NOVA-61: Race condition.
-    // Step 1: read QuantityAvailable  (non-atomic)
-    // Step 2: compare to requested    (non-atomic)
-    // Step 3: write QuantityReserved  (non-atomic)
-    //
-    // Two concurrent requests for the last 5 units both pass step 2 before
-    // either reaches step 3. Both succeed. QuantityReserved ends up double-counted.
-    // Correct fix: SELECT ... FOR UPDATE or optimistic concurrency check on save.
-    // Temporary workaround added for Black Friday: retry loop (doesn't actually help).
+    // NOVA-61: atomic conditional UPDATE + reservation/ledger in one DB transaction.
     public async Task ReserveStockAsync(
         string sku, int quantity, Guid orderId, CancellationToken ct = default)
     {
-        // retry up to 3 times — this does NOT fix the race, just masks transient failures
-        for (int attempt = 1; attempt <= 3; attempt++)
+        if (quantity <= 0)
+            throw new DomainException("INVALID_QUANTITY", "Reservation quantity must be positive.");
+
+        var reservation = await _inventoryRepo.ReserveStockAtomicAsync(
+            sku, quantity, orderId, ReservationHold, ct);
+
+        if (reservation == null)
         {
-            var inv = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
-
-            if (inv == null)
-                throw new InsufficientInventoryException(sku, quantity, 0);
-
-            // BUG: another thread can pass this check concurrently
-            if (inv.QuantityAvailable < quantity)
-                throw new InsufficientInventoryException(sku, quantity, inv.QuantityAvailable);
-
-            try
-            {
-                // no lock here — the window between the check above and this write
-                // is where concurrent reservations slip through
-                inv.QuantityReserved += quantity;
-                inv.LastUpdatedAt = DateTime.UtcNow;
-
-                await _inventoryRepo.UpdateAsync(inv, ct);
-
-                var transaction = new InventoryTransaction
-                {
-                    ProductSku     = sku,
-                    InventoryId    = inv.Id,
-                    Type           = InventoryTransactionType.Reserved,
-                    QuantityDelta  = -quantity,
-                    QuantityBefore = inv.QuantityAvailable + quantity,
-                    QuantityAfter  = inv.QuantityAvailable,
-                    OrderId        = orderId,
-                    CreatedByUserId = "system",
-                    CreatedAt      = DateTime.UtcNow
-                };
-
-                await _inventoryRepo.AddTransactionAsync(transaction, ct);
-
-                // raise event — also happens before transaction is fully committed
-                var evt = new InventoryReservedEvent(sku, quantity, orderId);
-                foreach (var handler in _reservationHandlers)
-                    handler(evt);
-
-                _logger.LogInformation(
-                    "Reserved {Qty}x {Sku} for order {OrderId} (attempt {Attempt})",
-                    quantity, sku, orderId, attempt);
-
-                return;
-            }
-            catch (Exception ex) when (attempt < 3)
-            {
-                _logger.LogWarning(ex,
-                    "Reservation attempt {Attempt} failed for {Sku}, retrying...", attempt, sku);
-                await Task.Delay(50 * attempt, ct);
-            }
+            var current = await _inventoryRepo.GetBySkuAsync(sku, null, ct);
+            throw new InsufficientInventoryException(
+                sku, quantity, current?.QuantityAvailable ?? 0);
         }
+
+        try
+        {
+            var evt = new InventoryReservedEvent(sku, quantity, orderId);
+            foreach (var handler in _reservationHandlers)
+                handler(evt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "InventoryReservedEvent handler failed after reserve of {Qty}x {Sku} for order {OrderId}",
+                quantity, sku, orderId);
+        }
+
+        _logger.LogInformation(
+            "Reserved {Qty}x {Sku} for order {OrderId}",
+            quantity, sku, orderId);
     }
 
     public async Task ReleaseReservationAsync(Guid orderId, CancellationToken ct = default)
@@ -229,7 +195,7 @@ public class InventoryService : IInventoryService
 
     public async Task<IReadOnlyList<StockAlert>> GetActiveAlertsAsync(CancellationToken ct = default)
     {
-        var lowStock = await _inventoryRepo.GetLowStockAsync(ct);
+        var lowStock = await _inventoryRepo.GetLowStockAsync(ct: ct);
 
         return lowStock.Select(inv => new StockAlert
         {

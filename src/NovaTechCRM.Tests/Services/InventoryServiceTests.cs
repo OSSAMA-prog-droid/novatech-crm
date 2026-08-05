@@ -12,141 +12,187 @@ namespace NovaTechCRM.Tests.Services;
 public class InventoryServiceTests
 {
     private readonly Mock<IInventoryRepository>      _repo   = new();
+    private readonly Mock<IAuditService>             _audit  = new();
     private readonly Mock<ILogger<InventoryService>> _logger = new();
 
-    private InventoryService CreateSut() => new(_repo.Object, _logger.Object);
+    private InventoryService CreateSut() => new(_repo.Object, _audit.Object, _logger.Object);
 
-    private static Inventory StockedItem(int available = 10, int reserved = 0) => new()
+    private static Inventory StockedItem(string sku = "SKU-8821", int onHand = 10, int reserved = 0) => new()
     {
-        Id                = Guid.NewGuid(),
-        ProductId         = Guid.NewGuid(),
-        WarehouseId       = "WH-US-EAST",
-        QuantityAvailable = available,
-        QuantityReserved  = reserved,
-        QuantityOnHand    = available + reserved,
-        IsDiscontinued    = false,
+        Id               = Guid.NewGuid(),
+        ProductSku       = sku,
+        ProductId        = Guid.NewGuid(),
+        WarehouseId      = "WH-US-EAST",
+        QuantityOnHand   = onHand,
+        QuantityReserved = reserved,
     };
 
     [Fact]
-    public async Task ReserveAsync_SucceedsWhenStockAvailable()
+    public async Task ReserveStockAsync_SucceedsWhenStockAvailable()
     {
-        var inv = StockedItem(available: 10);
-        _repo.Setup(r => r.GetByProductAsync(inv.ProductId, null, null, default))
-            .ReturnsAsync(inv);
-        _repo.Setup(r => r.UpdateAsync(It.IsAny<Inventory>(), default))
-            .ReturnsAsync((Inventory i, CancellationToken _) => i);
-        _repo.Setup(r => r.CreateReservationAsync(It.IsAny<InventoryReservation>(), default))
-            .ReturnsAsync((InventoryReservation r, CancellationToken _) => r);
+        var inv = StockedItem(onHand: 10);
+        var orderId = Guid.NewGuid();
+        var reservation = new InventoryReservation
+        {
+            ProductSku  = inv.ProductSku,
+            InventoryId = inv.Id,
+            OrderId     = orderId,
+            Quantity    = 3,
+        };
 
-        var result = await CreateSut().ReserveAsync(inv.ProductId, null, "WH-US-EAST", 3, Guid.NewGuid());
+        _repo.Setup(r => r.ReserveStockAtomicAsync(
+                inv.ProductSku, 3, orderId, It.IsAny<TimeSpan>(), default))
+            .ReturnsAsync(reservation);
 
-        Assert.NotNull(result);
-        Assert.Equal(3, result.Quantity);
+        await CreateSut().ReserveStockAsync(inv.ProductSku, 3, orderId);
+
+        _repo.Verify(r => r.ReserveStockAtomicAsync(
+            inv.ProductSku, 3, orderId, It.IsAny<TimeSpan>(), default), Times.Once);
     }
 
     [Fact]
-    public async Task ReserveAsync_Throws_WhenInsufficientStock()
+    public async Task ReserveStockAsync_Throws_WhenInsufficientStock()
     {
-        var inv = StockedItem(available: 2);
-        _repo.Setup(r => r.GetByProductAsync(inv.ProductId, null, null, default))
-            .ReturnsAsync(inv);
+        var inv = StockedItem(onHand: 2);
+        var orderId = Guid.NewGuid();
+
+        _repo.Setup(r => r.ReserveStockAtomicAsync(
+                inv.ProductSku, 5, orderId, It.IsAny<TimeSpan>(), default))
+            .ReturnsAsync((InventoryReservation?)null);
+        _repo.Setup(r => r.GetBySkuAsync(inv.ProductSku, null, default)).ReturnsAsync(inv);
 
         await Assert.ThrowsAsync<InsufficientInventoryException>(
-            () => CreateSut().ReserveAsync(inv.ProductId, null, "WH-US-EAST", 5, Guid.NewGuid()));
+            () => CreateSut().ReserveStockAsync(inv.ProductSku, 5, orderId));
     }
 
     [Fact]
-    public async Task ReserveAsync_Throws_WhenInventoryNotFound()
+    public async Task ReserveStockAsync_Throws_WhenInventoryNotFound()
     {
-        _repo.Setup(r => r.GetByProductAsync(It.IsAny<Guid>(), null, null, default))
-            .ReturnsAsync((Inventory?)null);
+        const string sku = "MISSING-SKU";
+        var orderId = Guid.NewGuid();
+
+        _repo.Setup(r => r.ReserveStockAtomicAsync(
+                sku, 1, orderId, It.IsAny<TimeSpan>(), default))
+            .ReturnsAsync((InventoryReservation?)null);
+        _repo.Setup(r => r.GetBySkuAsync(sku, null, default)).ReturnsAsync((Inventory?)null);
 
         await Assert.ThrowsAsync<InsufficientInventoryException>(
-            () => CreateSut().ReserveAsync(Guid.NewGuid(), null, "WH", 1, Guid.NewGuid()));
+            () => CreateSut().ReserveStockAsync(sku, 1, orderId));
     }
 
-    // NOVA-61: Race condition test — two concurrent reservations against the same stock.
-    // Both threads read QuantityAvailable = 5 and both see sufficient stock.
-    // Both proceed to write, resulting in QuantityReserved being incremented twice
-    // even though combined demand (8) exceeds supply (5).
-    //
-    // This test demonstrates the window by running two Tasks concurrently against
-    // the same mocked inventory object (no locking in InventoryService.ReserveAsync).
     [Fact]
-    public async Task ReserveAsync_NOVA61_ConcurrentReservationsCanOverCommitStock()
+    public async Task ReserveStockAsync_Throws_WhenQuantityInvalid()
     {
-        var inv = StockedItem(available: 5);
-        var orderId1 = Guid.NewGuid();
-        var orderId2 = Guid.NewGuid();
+        await Assert.ThrowsAsync<DomainException>(
+            () => CreateSut().ReserveStockAsync("SKU-1", 0, Guid.NewGuid()));
+    }
 
-        // Both reads return the same snapshot — simulates the race window
-        _repo.Setup(r => r.GetByProductAsync(inv.ProductId, null, null, default))
-            .ReturnsAsync(inv);
+    [Fact]
+    public async Task ReserveStockAsync_NOVA61_ConcurrentReservationsCannotOverCommitStock()
+    {
+        const string sku = "SKU-8821";
+        const int onHand = 5;
+        var reserved = 0;
+        var gate = new object();
+        var successes = 0;
+        var failures = 0;
 
-        var callCount = 0;
-        _repo.Setup(r => r.UpdateAsync(It.IsAny<Inventory>(), default))
-            .ReturnsAsync((Inventory i, CancellationToken _) =>
+        _repo.Setup(r => r.ReserveStockAtomicAsync(
+                sku, It.IsAny<int>(), It.IsAny<Guid>(), It.IsAny<TimeSpan>(), default))
+            .ReturnsAsync((string _, int qty, Guid orderId, TimeSpan __, CancellationToken ____) =>
             {
-                // simulate concurrent writes landing on same stale base
-                callCount++;
-                return i;
+                lock (gate)
+                {
+                    if (onHand - reserved < qty)
+                        return null;
+                    reserved += qty;
+                    return new InventoryReservation
+                    {
+                        ProductSku  = sku,
+                        InventoryId = Guid.NewGuid(),
+                        OrderId     = orderId,
+                        Quantity    = qty,
+                    };
+                }
             });
-        _repo.Setup(r => r.CreateReservationAsync(It.IsAny<InventoryReservation>(), default))
-            .ReturnsAsync((InventoryReservation r, CancellationToken _) => r);
 
-        // fire both reservations simultaneously
-        var t1 = CreateSut().ReserveAsync(inv.ProductId, null, "WH-US-EAST", 4, orderId1);
-        var t2 = CreateSut().ReserveAsync(inv.ProductId, null, "WH-US-EAST", 4, orderId2);
+        _repo.Setup(r => r.GetBySkuAsync(sku, null, default))
+            .ReturnsAsync(() => StockedItem(sku, onHand, reserved));
 
-        // BUG (NOVA-61): both should not succeed — combined demand 8 > stock 5.
-        // Without locking, both reads see available = 5, both pass the check, both write.
-        // The test below documents that both tasks complete without exception (the bug).
-        await Task.WhenAll(t1, t2);     // <-- this should throw on one, but doesn't
+        var sut = CreateSut();
+        var t1 = Task.Run(async () =>
+        {
+            try
+            {
+                await sut.ReserveStockAsync(sku, 4, Guid.NewGuid());
+                Interlocked.Increment(ref successes);
+            }
+            catch (InsufficientInventoryException)
+            {
+                Interlocked.Increment(ref failures);
+            }
+        });
+        var t2 = Task.Run(async () =>
+        {
+            try
+            {
+                await sut.ReserveStockAsync(sku, 4, Guid.NewGuid());
+                Interlocked.Increment(ref successes);
+            }
+            catch (InsufficientInventoryException)
+            {
+                Interlocked.Increment(ref failures);
+            }
+        });
 
-        Assert.Equal(2, callCount);     // both writes executed — stock over-committed
+        await Task.WhenAll(t1, t2);
+
+        Assert.Equal(1, successes);
+        Assert.Equal(1, failures);
+        Assert.Equal(4, reserved);
     }
 
     [Fact]
     public async Task ReleaseReservationAsync_RestoresQuantity()
     {
-        var reservationId = Guid.NewGuid();
-        var inv = StockedItem(available: 7, reserved: 3);
+        var orderId = Guid.NewGuid();
+        var inv = StockedItem(onHand: 10, reserved: 3);
 
         var reservation = new InventoryReservation
         {
-            Id          = reservationId,
+            Id          = Guid.NewGuid(),
             InventoryId = inv.Id,
-            ProductId   = inv.ProductId,
+            ProductSku  = inv.ProductSku,
+            OrderId     = orderId,
             Quantity    = 3,
             ExpiresAt   = DateTime.UtcNow.AddMinutes(10),
         };
 
-        _repo.Setup(r => r.GetReservationAsync(reservationId, default)).ReturnsAsync(reservation);
-        _repo.Setup(r => r.GetByIdAsync(inv.Id, default)).ReturnsAsync(inv);
+        _repo.Setup(r => r.GetReservationsByOrderAsync(orderId, default))
+            .ReturnsAsync(new List<InventoryReservation> { reservation });
+        _repo.Setup(r => r.GetBySkuAsync(inv.ProductSku, null, default)).ReturnsAsync(inv);
         _repo.Setup(r => r.UpdateAsync(It.IsAny<Inventory>(), default))
             .ReturnsAsync((Inventory i, CancellationToken _) => i);
-        _repo.Setup(r => r.DeleteReservationAsync(reservationId, default)).Returns(Task.CompletedTask);
+        _repo.Setup(r => r.UpdateReservationAsync(It.IsAny<InventoryReservation>(), default))
+            .Returns(Task.CompletedTask);
+        _repo.Setup(r => r.AddTransactionAsync(It.IsAny<InventoryTransaction>(), default))
+            .Returns(Task.CompletedTask);
 
-        await CreateSut().ReleaseReservationAsync(reservationId);
+        await CreateSut().ReleaseReservationAsync(orderId);
 
         _repo.Verify(r => r.UpdateAsync(
-            It.Is<Inventory>(i => i.QuantityReserved == 0 && i.QuantityAvailable == 10),
+            It.Is<Inventory>(i => i.QuantityReserved == 0),
             default), Times.Once);
     }
 
     [Fact]
     public async Task GetLowStockAsync_ReturnsItemsBelowThreshold()
     {
-        var items = new List<Inventory>
-        {
-            StockedItem(available: 2),
-            StockedItem(available: 8),
-        };
+        var low = StockedItem(onHand: 2);
+        _repo.Setup(r => r.GetLowStockAsync(10, default))
+            .ReturnsAsync(new List<Inventory> { low });
 
-        _repo.Setup(r => r.GetLowStockAsync(5, default))
-            .ReturnsAsync(new List<Inventory> { items[0] });
-
-        var result = await CreateSut().GetLowStockAsync(5);
+        var result = await CreateSut().GetLowStockAsync();
 
         Assert.Single(result);
         Assert.Equal(2, result[0].QuantityAvailable);
