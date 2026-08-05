@@ -24,6 +24,7 @@ public class NovaTechDbContext : DbContext
     public DbSet<ProductVariant>       ProductVariants       => Set<ProductVariant>();
     public DbSet<Inventory>            Inventory             => Set<Inventory>();
     public DbSet<InventoryReservation> InventoryReservations => Set<InventoryReservation>();
+    public DbSet<InventoryTransaction> InventoryTransactions => Set<InventoryTransaction>();
     public DbSet<Shipment>             Shipments             => Set<Shipment>();
     public DbSet<ShipmentEvent>        ShipmentEvents        => Set<ShipmentEvent>();
     public DbSet<Discount>             Discounts             => Set<Discount>();
@@ -126,15 +127,26 @@ public class NovaTechDbContext : DbContext
         mb.Entity<Inventory>(e =>
         {
             e.HasKey(i => i.Id);
-            // composite unique so we can't double-reserve the same product+variant+warehouse
+            e.Property(i => i.ProductSku).HasMaxLength(100).IsRequired();
+            e.HasIndex(i => i.ProductSku);
             e.HasIndex(i => new { i.ProductId, i.VariantId, i.WarehouseId }).IsUnique();
+            e.Ignore(i => i.RecentTransactions);
         });
 
         mb.Entity<InventoryReservation>(e =>
         {
             e.HasKey(r => r.Id);
+            e.Property(r => r.ProductSku).HasMaxLength(100).IsRequired();
             e.HasIndex(r => r.OrderId);
             e.HasIndex(r => r.ExpiresAt);
+        });
+
+        mb.Entity<InventoryTransaction>(e =>
+        {
+            e.HasKey(t => t.Id);
+            e.Property(t => t.ProductSku).HasMaxLength(100).IsRequired();
+            e.HasIndex(t => t.ProductSku);
+            e.Property(t => t.UnitCost).HasPrecision(18, 2);
         });
 
         mb.Entity<Shipment>(e =>

@@ -13,3 +13,6 @@ Database/
 
 The C# repositories reference these by name — e.g.
 `InvoiceRepository.GetNextSequenceAsync` calls `dbo.usp_GetNextInvoiceSequence`.
+
+Before deploying the NOVA-61 inventory fix, run:
+`Tables/InventoryTransactions.sql`

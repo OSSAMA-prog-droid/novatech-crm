@@ -83,7 +83,8 @@ builder.Services.AddScoped<IAuditRepository>(sp =>
 builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
 builder.Services.AddScoped<IShipmentRepository, ShipmentRepository>();
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
-builder.Services.AddScoped<IInventoryRepository, InventoryRepository>();
+builder.Services.AddScoped<IInventoryRepository>(sp =>
+    new InventoryRepository(sp.GetRequiredService<NovaTechDbContext>()));
 builder.Services.AddScoped<IReportRepository, ReportRepository>();
 builder.Services.AddScoped<IDiscountRepository, DiscountRepository>();
 builder.Services.AddScoped<INotificationRepository, NotificationRepository>();

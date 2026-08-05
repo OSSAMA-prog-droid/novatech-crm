@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
+using NovaTechCRM.Domain.Exceptions;
 using NovaTechCRM.Domain.Models;
 using NovaTechCRM.Repositories;
+using NovaTechCRM.Services.Interfaces;
 
 namespace NovaTechCRM.Services;
 
@@ -9,17 +11,20 @@ public class OrderService
     private readonly IOrderRepository _orderRepo;
     private readonly IFraudShieldService _fraudShield;
     private readonly INotificationService _notifications;
+    private readonly IInventoryService _inventory;
     private readonly ILogger<OrderService> _logger;
 
     public OrderService(
         IOrderRepository orderRepo,
         IFraudShieldService fraudShield,
         INotificationService notifications,
+        IInventoryService inventory,
         ILogger<OrderService> logger)
     {
         _orderRepo = orderRepo;
         _fraudShield = fraudShield;
         _notifications = notifications;
+        _inventory = inventory;
         _logger = logger;
     }
 
@@ -43,14 +48,33 @@ public class OrderService
 
         order.FraudCheckId = fraudResult.CheckId;
         order.FraudCheckPassed = true;
-        await FulfillOrderAsync(order, ct);
 
+        try
+        {
+            foreach (var item in order.Items.Where(i => i.Quantity > 0))
+            {
+                await _inventory.ReserveStockAsync(item.ProductSku, item.Quantity, order.Id, ct);
+            }
+        }
+        catch (InsufficientInventoryException ex)
+        {
+            await _inventory.ReleaseReservationAsync(order.Id, ct);
+            order.Status = OrderStatus.Rejected;
+            await _orderRepo.SaveAsync(order, ct);
+            _logger.LogWarning(
+                "Order {OrderId} rejected — insufficient stock for {Sku} (requested {Requested}, available {Available})",
+                order.Id, ex.ProductSku, ex.Requested, ex.Available);
+            return order;
+        }
+
+        await FulfillOrderAsync(order, ct);
         return order;
     }
 
     private async Task FulfillOrderAsync(Order order, CancellationToken ct = default)
     {
-        // This runs without knowing the fraud check outcome — the race condition.
+        await _inventory.CommitReservationAsync(order.Id, ct);
+
         order.Status = OrderStatus.Fulfilled;
         order.FulfilledAt = DateTime.UtcNow;
         await _orderRepo.SaveAsync(order, ct);

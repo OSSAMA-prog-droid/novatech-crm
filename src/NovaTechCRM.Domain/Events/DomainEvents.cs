@@ -2,14 +2,6 @@ using NovaTechCRM.Domain.Models;
 
 namespace NovaTechCRM.Domain.Events;
 
-// Base event — all domain events inherit from this
-public abstract class DomainEvent
-{
-    public Guid EventId { get; } = Guid.NewGuid();
-    public DateTime OccurredAt { get; } = DateTime.UtcNow;
-    public string EventType => GetType().Name;
-}
-
 public class OrderPlacedEvent : DomainEvent
 {
     public Order Order { get; }
@@ -61,36 +53,6 @@ public class ShipmentStatusChangedEvent : DomainEvent
         Shipment = shipment;
         OldStatus = old;
         NewStatus = @new;
-    }
-}
-
-// NOVA-61: InventoryReservedEvent is raised BEFORE the DB write commits.
-// If two threads raise this event concurrently both see available > 0.
-public class InventoryReservedEvent : DomainEvent
-{
-    public string ProductSku { get; }
-    public int QuantityReserved { get; }
-    public Guid OrderId { get; }
-
-    public InventoryReservedEvent(string sku, int qty, Guid orderId)
-    {
-        ProductSku = sku;
-        QuantityReserved = qty;
-        OrderId = orderId;
-    }
-}
-
-public class InventoryLowStockEvent : DomainEvent
-{
-    public string ProductSku { get; }
-    public int QuantityAvailable { get; }
-    public int ReorderPoint { get; }
-
-    public InventoryLowStockEvent(string sku, int available, int reorderPoint)
-    {
-        ProductSku = sku;
-        QuantityAvailable = available;
-        ReorderPoint = reorderPoint;
     }
 }
 
